@@ -14,7 +14,6 @@ import logging
 from datetime import datetime, timezone
 
 import requests
-import anthropic
 from bs4 import BeautifulSoup
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -148,17 +147,25 @@ def scrape(url: str) -> str:
 
 
 # ── Claude ────────────────────────────────────────────────────────────────────
-_claude = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-
-
 def ask_claude(system: str, user: str, model: str = CLAUDE_MODEL) -> str:
-    msg = _claude.messages.create(
-        model=model,
-        max_tokens=1024,
-        system=system,
-        messages=[{"role": "user", "content": user}],
+    r = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": CLAUDE_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": model,
+            "max_tokens": 1024,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        },
+        timeout=60,
     )
-    return msg.content[0].text.strip()
+    if not r.ok:
+        raise RuntimeError(f"Claude API error {r.status_code}: {r.text[:200]}")
+    return r.json()["content"][0]["text"].strip()
 
 
 def make_research_brief(contact: dict, site_text: str) -> str:
