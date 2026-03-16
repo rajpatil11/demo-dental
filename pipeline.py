@@ -31,7 +31,7 @@ AGENT_GAP_SECS   = 120
 # ── Secrets from environment ──────────────────────────────────────────────────
 GHL_API_KEY   = os.environ["GHL_API_KEY"]
 VAPI_API_KEY  = os.environ["VAPI_API_KEY"]
-CLAUDE_API_KEY = os.environ["CLAUDE_API_KEY"]
+CLAUDE_API_KEY = os.environ["CLAUDE_API_KEY"].strip()
 SHEET_ID       = os.environ.get("SHEET_ID", SHEET_ID_DEFAULT)
 # GOOGLE_SERVICE_ACCOUNT must be the full JSON string of the service account
 GOOGLE_SA_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
