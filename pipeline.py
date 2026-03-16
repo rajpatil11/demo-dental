@@ -543,6 +543,61 @@ def ghl_send_email(contact_id: str, to_email: str, subject: str, plain_body: str
     return rs.json()
 
 
+# ── Backfill job ──────────────────────────────────────────────────────────────
+def run_backfill(svc):
+    """Send Email 1 to any SENT contact that never received it (no email_subject in sheet)."""
+    log.info("━━━ BACKFILL CHECK ━━━")
+    rows = read_all_rows(svc)
+    fixed = skipped = 0
+
+    for i, row in enumerate(rows):
+        sheet_row = i + 2
+        if safe(row, C["status"]) != "SENT":
+            continue
+        # Already complete — has email_subject stored in sheet
+        if safe(row, C["email_subject"]):
+            continue
+        # Need brief + vapi_link to regenerate email
+        vapi_link = safe(row, C["vapi_link"])
+        brief     = safe(row, C["research_brief"])
+        email     = safe(row, C["email"])
+        company   = safe(row, C["company"])
+        if not vapi_link or not brief or not email:
+            continue
+
+        log.info(f"  Backfill: {company} ({email})")
+        contact = {
+            "first_name": safe(row, C["first_name"]),
+            "last_name":  safe(row, C["last_name"]),
+            "title":      safe(row, C["title"]),
+            "company":    company,
+            "email":      email,
+            "city":       safe(row, C["city"]),
+            "state":      safe(row, C["state"]),
+        }
+        try:
+            subject, body = make_email(contact, vapi_link, brief)
+            ghl_id = ghl_find_contact(email)
+            if not ghl_id:
+                log.warning(f"    GHL contact not found — skipping")
+                skipped += 1
+                continue
+            ghl_update_contact(ghl_id, {"email_subject": subject, "email_body": body, "vapi_link": vapi_link})
+            ghl_send_email(ghl_id, email, subject, body)
+            ghl_add_tag(ghl_id, "Day1-Campaign-Live")
+            now_iso = datetime.now(timezone.utc).isoformat()
+            set_cell(svc, sheet_row, C["email_sent_time"], now_iso)
+            set_cells(svc, sheet_row, C["email_subject"], [subject, body])
+            log.info(f"    ✓ Email sent + tagged")
+            fixed += 1
+            time.sleep(5)
+        except Exception as e:
+            log.error(f"    ✗ Backfill failed: {e}")
+            skipped += 1
+
+    log.info(f"Backfill complete — {fixed} sent, {skipped} skipped.\n")
+
+
 # ── Cleanup job ───────────────────────────────────────────────────────────────
 def run_cleanup(svc):
     log.info("━━━ CLEANUP JOB ━━━")
@@ -665,6 +720,7 @@ def main():
     log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
     svc = sheets_service()
+    run_backfill(svc)
     run_cleanup(svc)
 
     log.info("━━━ MAIN PIPELINE ━━━")
