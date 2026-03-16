@@ -135,29 +135,54 @@ def set_cells(svc, row: int, start_col: int, values: list):
 
 
 # ── Scraper ───────────────────────────────────────────────────────────────────
-def scrape(url: str) -> str:
-    """Scrape homepage + key sub-pages to get a full picture of the practice."""
+def scrape(url: str, max_pages: int = 10, max_chars: int = 12000) -> str:
+    """Crawl the website: homepage + all internal links found on it, up to max_pages."""
     if not url.startswith("http"):
         url = "https://" + url
     base = url.rstrip("/")
-    pages_to_try = [base, f"{base}/services", f"{base}/about", f"{base}/contact", f"{base}/team"]
-    seen, chunks = set(), []
-    for page in pages_to_try:
+    from urllib.parse import urljoin, urlparse
+
+    def same_domain(href: str) -> bool:
         try:
-            r = requests.get(page, headers={"User-Agent": "Mozilla/5.0"}, timeout=12, allow_redirects=True)
-            if not r.ok or r.url in seen:
+            return urlparse(urljoin(base, href)).netloc == urlparse(base).netloc
+        except Exception:
+            return False
+
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; ExelvoBot/1.0)"}
+    queue, seen, chunks = [base], set(), []
+
+    while queue and len(seen) < max_pages:
+        page = queue.pop(0)
+        if page in seen:
+            continue
+        try:
+            r = requests.get(page, headers=headers, timeout=12, allow_redirects=True)
+            if not r.ok or "text/html" not in r.headers.get("content-type", ""):
                 continue
-            seen.add(r.url)
+            final_url = r.url
+            if final_url in seen:
+                continue
+            seen.add(final_url)
             soup = BeautifulSoup(r.text, "html.parser")
+            # Queue new internal links from this page
+            for a in soup.find_all("a", href=True):
+                href = a["href"].strip()
+                if href.startswith("#") or href.startswith("mailto:") or href.startswith("tel:"):
+                    continue
+                full = urljoin(base, href).split("#")[0].rstrip("/")
+                if full not in seen and full not in queue and same_domain(full):
+                    queue.append(full)
+            # Extract text
             for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
                 tag.decompose()
             text = " ".join(soup.get_text(separator=" ").split())
             if text:
-                chunks.append(f"[{page}]\n{text[:2000]}")
+                chunks.append(f"[{final_url}]\n{text[:1500]}")
         except Exception:
             pass
+
     combined = "\n\n".join(chunks)
-    return combined[:8000] if combined else ""
+    return combined[:max_chars] if combined else ""
 
 
 # ── Claude ────────────────────────────────────────────────────────────────────
