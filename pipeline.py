@@ -312,7 +312,7 @@ def create_vapi_agent(contact: dict, system_prompt: str) -> tuple[str, str]:
     r.raise_for_status()
     agent_id = r.json()["id"]
 
-    demo_base = os.environ.get("DEMO_BASE_URL", "https://rajpatil11.github.io/demo-dental")
+    demo_base = os.environ.get("DEMO_BASE_URL", "https://demo.exelvoai.com")
     web_call_url = f"{demo_base}/demo.html?assistantId={agent_id}&practice={requests.utils.quote(contact['company'])}"
     return agent_id, web_call_url
 
@@ -409,6 +409,7 @@ def ghl_send_email(contact_id: str, to_email: str, subject: str, plain_body: str
         json={
             "type": "Email",
             "conversationId": conv_id,
+            "contactId": contact_id,
             "subject": subject,
             "html": html_body,
             "emailFrom": f"{SENDER_NAME} <{SENDER_EMAIL}>",
