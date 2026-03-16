@@ -196,7 +196,7 @@ def ask_claude(system: str, user: str, model: str = CLAUDE_MODEL) -> str:
         },
         json={
             "model": model,
-            "max_tokens": 1024,
+            "max_tokens": 2048,
             "system": system,
             "messages": [{"role": "user", "content": user}],
         },
@@ -209,33 +209,38 @@ def ask_claude(system: str, user: str, model: str = CLAUDE_MODEL) -> str:
 
 def make_research_brief(contact: dict, site_text: str) -> str:
     system = (
-        "You are a sharp B2B sales researcher. A healthcare organization's website content is provided. "
-        "Your job is to extract structured intelligence for a cold outreach campaign.\n\n"
-        "First line of your response must always be:\n"
-        "PRACTICE TYPE: [exact type — e.g. Dental Clinic, Hospital, Orthopedic Clinic, Physical Therapy, "
+        "You are a senior B2B sales researcher preparing a detailed intelligence brief on a healthcare organization. "
+        "A cold outreach team will use this brief to build a personalized AI demo and write a targeted email. "
+        "The brief must be thorough enough that someone who has never visited the site understands exactly "
+        "who this organization is, what they do, how they operate, and where they are vulnerable to losing patients.\n\n"
+        "First line must always be:\n"
+        "PRACTICE TYPE: [exact type — Dental Clinic, Hospital, Orthopedic Clinic, Physical Therapy, "
         "Mental Health Practice, Urgent Care, Pediatric Clinic, Medical Spa, Chiropractic, etc.]\n\n"
-        "Then extract ALL of the following. Mark 'not found' if missing — never guess:\n\n"
-        "1. PROVIDERS: Names and titles of all doctors, specialists, or key staff mentioned\n"
-        "2. SERVICES: Every specific service, procedure, or treatment listed — be exhaustive\n"
-        "3. SPECIALTY FOCUS: Any subspecialty or niche focus areas\n"
-        "4. HOURS: Operating hours — do they offer evenings, weekends, or 24/7?\n"
-        "5. BOOKING METHOD: Exactly how do patients/clients book — online system, phone only, "
-        "contact form, patient portal, walk-in?\n"
-        "6. INSURANCE & PAYMENTS: Any plans, billing options, or financing mentioned\n"
-        "7. TECHNOLOGY: Any equipment, software, or tech mentioned\n"
-        "8. STANDOUT DETAIL: One specific thing a salesperson could reference in a cold email — "
-        "an award, years in business, patient count, unique program, tagline, or specific claim\n"
-        "9. CALL/BOOKING PAIN POINT: The most likely reason a new patient/client calling this practice "
-        "might not get through or book successfully — be specific based on what the site shows "
-        "(phone-only, no after-hours, no online booking, solo provider, etc.)\n\n"
-        "Be factual. Only report what is actually on the site."
+        "Then write a full brief in the following sections. Each section should be 2–4 sentences of real detail, "
+        "not bullet fragments. If information is not on the site, say so briefly and move on — never fabricate.\n\n"
+        "OVERVIEW: Who is this organization? What do they do, who do they serve, and what is their positioning? "
+        "Include their city, any tagline or mission statement, and how long they've been operating if mentioned.\n\n"
+        "PROVIDERS & TEAM: Who are the doctors, specialists, or key staff? Include names, credentials, and any "
+        "notable background (fellowships, specializations, years of experience). If a solo practice, say so.\n\n"
+        "SERVICES: List every specific service, procedure, or treatment offered. Go deep — name individual "
+        "procedures, not just categories. Include any unique or specialty offerings that competitors may not have.\n\n"
+        "OPERATIONS: How do patients/clients book — online system, phone only, contact form, patient portal, "
+        "walk-in? What are their hours? Do they offer evenings, weekends, emergency slots, or telehealth? "
+        "Any insurance plans or financing options mentioned?\n\n"
+        "TECHNOLOGY & DIFFERENTIATORS: Any equipment, software, certifications, awards, or specific claims "
+        "mentioned on the site. What makes them stand out? Quote their own language where relevant.\n\n"
+        "PAIN POINT & OUTREACH ANGLE: Based on everything above, what is the single most likely reason a new "
+        "patient calling this practice might not get through or book? Be specific — phone-only with no after-hours "
+        "option, solo provider who can't answer while treating, no online booking on a busy multi-doctor practice, etc. "
+        "Then state in one sentence exactly how an AI receptionist would solve that specific problem for them.\n\n"
+        "Be factual. Only report what is actually on the site. Write in clear, confident prose."
     )
     prompt = (
         f"Organization: {contact['company']}\n"
         f"Location: {contact['city']}, {contact['state']}\n"
         f"Website content:\n{site_text or 'No website content available.'}"
     )
-    return ask_claude(system, prompt)
+    return ask_claude(system, prompt, model=CLAUDE_MODEL)
 
 
 def make_vapi_system_prompt(contact: dict, brief: str) -> str:
@@ -619,7 +624,7 @@ def process_contact(svc, row: list, sheet_row: int, campaign_day: int = 1) -> bo
         subject, body = make_email(contact, vapi_link, brief)
         log.info(f"        Subject: {subject}")
 
-        log.info("  [6/7] Updating GHL CRM...")
+        log.info("  [6/7] Updating GHL CRM + sending email...")
         ghl_id = ghl_find_contact(contact["email"])
         if ghl_id:
             ghl_update_contact(ghl_id, {
@@ -627,11 +632,12 @@ def process_contact(svc, row: list, sheet_row: int, campaign_day: int = 1) -> bo
                 "email_body":     body,
                 "vapi_demo_link": vapi_link,
             })
-            ghl_add_note(ghl_id, f"EXELVO AI Day 1 | Agent: {agent_id}\nDemo: {vapi_link}")
+            ghl_add_note(ghl_id, f"EXELVO AI Day {campaign_day} | Agent: {agent_id}\nDemo: {vapi_link}")
+            ghl_send_email(ghl_id, contact["email"], subject, body)
             ghl_add_tag(ghl_id, "Day1-Campaign-Live")
-            log.info(f"        GHL {ghl_id} — custom fields set + tagged Day1-Campaign-Live → workflow fires")
+            log.info(f"        GHL {ghl_id} — email sent + tagged Day1-Campaign-Live")
         else:
-            log.warning("        GHL contact not found — CRM skipped")
+            log.warning("        GHL contact not found — CRM + email skipped")
 
         log.info("  [7/7] Updating Google Sheet...")
         now_iso = datetime.now(timezone.utc).isoformat()
