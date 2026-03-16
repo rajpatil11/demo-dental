@@ -365,6 +365,16 @@ def ghl_add_tag(contact_id: str, tag: str):
     r.raise_for_status()
 
 
+def ghl_add_note(contact_id: str, body: str):
+    r = requests.post(
+        f"{GHL_BASE}/contacts/{contact_id}/notes",
+        json={"body": body},
+        headers=_gh(),
+        timeout=15,
+    )
+    r.raise_for_status()
+
+
 # ── Cleanup job ───────────────────────────────────────────────────────────────
 def run_cleanup(svc):
     log.info("━━━ CLEANUP JOB ━━━")
@@ -451,16 +461,15 @@ def process_contact(svc, row: list, sheet_row: int) -> bool:
         log.info("  [6/7] Updating GHL CRM...")
         ghl_id = ghl_find_contact(contact["email"])
         if ghl_id:
-            ghl_update_contact(ghl_id, {
-                "vapi_link":      vapi_link,
-                "vapi_agent_id":  agent_id,
-                "research_brief": brief,
-                "email_subject":  subject,
-                "email_body":     body,
-                "day_added":      datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            })
+            note_body = (
+                f"EXELVO AI — Day 1 Outbound\n"
+                f"Subject: {subject}\n\n"
+                f"{body}\n\n"
+                f"Demo link: {vapi_link}"
+            )
+            ghl_add_note(ghl_id, note_body)
             ghl_add_tag(ghl_id, "Day1-Campaign-Live")
-            log.info(f"        GHL contact {ghl_id} updated + tagged")
+            log.info(f"        GHL contact {ghl_id} — note added + tagged")
         else:
             log.warning("        GHL contact not found — CRM skipped")
 
