@@ -1,0 +1,211 @@
+"""
+Backfill script for the 17 SENT contacts:
+  - Contacts WITH email_sent_time (4):  just add day1-campaign-live tag
+  - Contacts WITHOUT email_sent_time (13): fetch stored email from GHL custom
+    fields, send Email 1, stamp email_sent_time in sheet, then add the tag
+"""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+
+import requests
+from dotenv import load_dotenv
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+
+SHEET_ID        = os.environ["SHEET_ID"]
+GOOGLE_SA_JSON  = os.environ["GOOGLE_SERVICE_ACCOUNT"]
+GHL_API_KEY     = os.environ["GHL_API_KEY"].strip()
+GHL_BASE        = "https://services.leadconnectorhq.com"
+GHL_VERSION     = "2021-07-28"
+GHL_LOCATION_ID = "Y6vbtAtrSByzFIROGlK5"
+SENDER_NAME     = "Dario Jovanovski"
+SENDER_EMAIL    = "support@parakeeet.com"
+
+# Column indices (0-based)
+C_STATUS     = 14   # O
+C_EMAIL      = 6    # G
+C_COMPANY    = 5    # F
+C_EMAIL_SENT = 18   # S
+
+
+def letter(col_idx: int) -> str:
+    return chr(ord("A") + col_idx)
+
+
+def safe(row: list, idx: int) -> str:
+    try:
+        return str(row[idx]).strip()
+    except IndexError:
+        return ""
+
+
+def _gh() -> dict:
+    return {
+        "Authorization": f"Bearer {GHL_API_KEY}",
+        "Version": GHL_VERSION,
+        "Content-Type": "application/json",
+    }
+
+
+def ghl_find_contact(email: str) -> str | None:
+    r = requests.get(
+        f"{GHL_BASE}/contacts/",
+        params={"locationId": GHL_LOCATION_ID, "query": email},
+        headers=_gh(), timeout=15,
+    )
+    r.raise_for_status()
+    for c in r.json().get("contacts", []):
+        if c.get("email", "").lower() == email.lower():
+            return c["id"]
+    return None
+
+
+def ghl_get_contact(contact_id: str) -> dict:
+    r = requests.get(f"{GHL_BASE}/contacts/{contact_id}", headers=_gh(), timeout=15)
+    r.raise_for_status()
+    return r.json().get("contact", {})
+
+
+def ghl_add_tag(contact_id: str, tag: str):
+    r = requests.post(
+        f"{GHL_BASE}/contacts/{contact_id}/tags",
+        json={"tags": [tag]},
+        headers=_gh(), timeout=15,
+    )
+    r.raise_for_status()
+
+
+def ghl_send_email(contact_id: str, to_email: str, subject: str, plain_body: str):
+    # Find or create conversation
+    r = requests.get(
+        f"{GHL_BASE}/conversations/search",
+        params={"contactId": contact_id, "locationId": GHL_LOCATION_ID},
+        headers=_gh(), timeout=15,
+    )
+    r.raise_for_status()
+    convs = r.json().get("conversations", [])
+
+    if convs:
+        conv_id = convs[0]["id"]
+    else:
+        rc = requests.post(
+            f"{GHL_BASE}/conversations/",
+            json={"contactId": contact_id, "locationId": GHL_LOCATION_ID},
+            headers=_gh(), timeout=15,
+        )
+        rc.raise_for_status()
+        conv_id = rc.json()["conversation"]["id"]
+
+    html_body = "".join(
+        f"<p>{line}</p>" if line.strip() else "<br>"
+        for line in plain_body.split("\n")
+    )
+
+    rs = requests.post(
+        f"{GHL_BASE}/conversations/messages",
+        json={
+            "type": "Email",
+            "conversationId": conv_id,
+            "contactId": contact_id,
+            "subject": subject,
+            "html": html_body,
+            "emailFrom": f"{SENDER_NAME} <{SENDER_EMAIL}>",
+            "emailTo": to_email,
+        },
+        headers=_gh(), timeout=15,
+    )
+    rs.raise_for_status()
+    return rs.json()
+
+
+# ── Load sheet ────────────────────────────────────────────────────────────────
+sa_info = json.loads(GOOGLE_SA_JSON)
+creds = Credentials.from_service_account_info(
+    sa_info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+)
+svc = build("sheets", "v4", credentials=creds).spreadsheets()
+rows = (
+    svc.values()
+    .get(spreadsheetId=SHEET_ID, range="MASTER_450!A2:V")
+    .execute()
+    .get("values", [])
+)
+
+emailed = tagged = skipped = not_found = 0
+
+for i, row in enumerate(rows):
+    sheet_row = i + 2
+    status = safe(row, C_STATUS)
+    if status != "SENT":
+        continue
+
+    email           = safe(row, C_EMAIL)
+    company         = safe(row, C_COMPANY)
+    email_sent_time = safe(row, C_EMAIL_SENT)
+
+    if not email:
+        continue
+
+    print(f"\n[Row {sheet_row}] {company} ({email})")
+
+    ghl_id = ghl_find_contact(email)
+    if not ghl_id:
+        print(f"  NOT FOUND in GHL — skipping")
+        not_found += 1
+        continue
+
+    # ── Case 1: Email never sent — retrieve from GHL and send ─────────────────
+    if not email_sent_time:
+        print(f"  No email_sent_time — fetching stored email from GHL...")
+        try:
+            contact_data = ghl_get_contact(ghl_id)
+            subject = ""
+            body = ""
+            for cf in contact_data.get("customFields", []):
+                key = cf.get("key", "")
+                val = cf.get("fieldValue", "") or cf.get("value", "")
+                if key == "email_subject":
+                    subject = val
+                elif key == "email_body":
+                    body = val
+
+            if not subject or not body:
+                print(f"  No email_subject/email_body in GHL custom fields — skipping")
+                skipped += 1
+                continue
+
+            ghl_send_email(ghl_id, email, subject, body)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            svc.values().update(
+                spreadsheetId=SHEET_ID,
+                range=f"MASTER_450!{letter(C_EMAIL_SENT)}{sheet_row}",
+                valueInputOption="RAW",
+                body={"values": [[now_iso]]},
+            ).execute()
+            print(f"  Email sent: {subject}")
+            emailed += 1
+
+        except Exception as e:
+            print(f"  ERROR sending email: {e}")
+            skipped += 1
+            continue
+
+    else:
+        print(f"  Email already sent at {email_sent_time}")
+
+    # ── Case 2 (and after Case 1): Add workflow trigger tag ───────────────────
+    try:
+        ghl_add_tag(ghl_id, "day1-campaign-live")
+        print(f"  Tagged: day1-campaign-live")
+        tagged += 1
+    except Exception as e:
+        print(f"  ERROR tagging: {e}")
+        skipped += 1
+
+print(f"\n{'='*50}")
+print(f"Done.  Emails sent: {emailed} | Tags added: {tagged} | Not in GHL: {not_found} | Errors: {skipped}")

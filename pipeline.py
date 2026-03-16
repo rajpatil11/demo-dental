@@ -584,7 +584,7 @@ def run_backfill(svc):
                 continue
             ghl_update_contact(ghl_id, {"email_subject": subject, "email_body": body, "vapi_link": vapi_link})
             ghl_send_email(ghl_id, email, subject, body)
-            ghl_add_tag(ghl_id, "Day1-Campaign-Live")
+            ghl_add_tag(ghl_id, "day1-campaign-live")
             now_iso = datetime.now(timezone.utc).isoformat()
             set_cell(svc, sheet_row, C["email_sent_time"], now_iso)
             set_cells(svc, sheet_row, C["email_subject"], [subject, body])
@@ -692,8 +692,8 @@ def process_contact(svc, row: list, sheet_row: int, campaign_day: int = 1) -> bo
         })
         ghl_add_note(ghl_id, f"EXELVO AI Day {campaign_day} | Agent: {agent_id}\nDemo: {vapi_link}")
         ghl_send_email(ghl_id, contact["email"], subject, body)
-        ghl_add_tag(ghl_id, "Day1-Campaign-Live")
-        log.info(f"        GHL {ghl_id} — email sent + tagged Day1-Campaign-Live")
+        ghl_add_tag(ghl_id, "day1-campaign-live")
+        log.info(f"        GHL {ghl_id} — email sent + tagged day1-campaign-live")
 
         log.info("  [7/7] Updating Google Sheet...")
         now_iso = datetime.now(timezone.utc).isoformat()
