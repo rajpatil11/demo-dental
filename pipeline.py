@@ -574,7 +574,7 @@ def run_cleanup(svc):
 
 
 # ── Single contact processor ──────────────────────────────────────────────────
-def process_contact(svc, row: list, sheet_row: int) -> bool:
+def process_contact(svc, row: list, sheet_row: int, campaign_day: int = 1) -> bool:
     contact = {
         "first_name": safe(row, C["first_name"]),
         "last_name":  safe(row, C["last_name"]),
@@ -635,6 +635,7 @@ def process_contact(svc, row: list, sheet_row: int) -> bool:
 
         log.info("  [7/7] Updating Google Sheet...")
         now_iso = datetime.now(timezone.utc).isoformat()
+        set_cell(svc, sheet_row, C["campaign_day"], str(campaign_day))
         set_cells(svc, sheet_row, C["vapi_agent_id"],
                   [agent_id, vapi_link, brief, now_iso])
         set_cell(svc, sheet_row, C["status"], "SENT")
@@ -660,7 +661,15 @@ def main():
 
     log.info("━━━ MAIN PIPELINE ━━━")
     rows = read_all_rows(svc)
-    log.info(f"Loaded {len(rows)} rows. Looking for PENDING contacts...\n")
+
+    # Auto-calculate campaign day: max existing day + 1 (or 1 if none sent yet)
+    existing_days = [
+        int(safe(r, C["campaign_day"]))
+        for r in rows
+        if safe(r, C["status"]) == "SENT" and safe(r, C["campaign_day"]).isdigit()
+    ]
+    campaign_day = max(existing_days) + 1 if existing_days else 1
+    log.info(f"Loaded {len(rows)} rows. Campaign Day: {campaign_day}. Looking for PENDING contacts...\n")
 
     sent = failed = skipped = 0
 
@@ -676,7 +685,7 @@ def main():
             skipped += 1
             continue
 
-        success = process_contact(svc, row, sheet_row)
+        success = process_contact(svc, row, sheet_row, campaign_day)
         if success:
             sent += 1
         else:
