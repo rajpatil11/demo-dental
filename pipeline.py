@@ -1,7 +1,8 @@
 """
 EXELVO AI — Automated Outbound Email Pipeline
 Runs Mon–Fri at 5pm IST (11:30 UTC) via GitHub Actions.
-Processes up to 15 PENDING dental contacts per run.
+Processes up to 15 PENDING healthcare contacts per run.
+Industry-agnostic: adapts to dental, hospital, ortho, therapy, urgent care, etc.
 """
 
 from __future__ import annotations
@@ -15,8 +16,11 @@ from datetime import datetime, timezone
 
 import requests
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
 # ── Hardcoded constants ───────────────────────────────────────────────────────
 GHL_LOCATION_ID  = "Y6vbtAtrSByzFIROGlK5"
@@ -26,8 +30,8 @@ WEBSITE          = "https://www.exelvoai.com"
 SENDER_NAME      = "Dario Jovanovski"
 SENDER_EMAIL     = "support@parakeeet.com"
 SENDER_COMPANY   = "EXELVO AI"
-DAILY_LIMIT      = 15
-AGENT_GAP_SECS   = 120
+DAILY_LIMIT      = int(os.environ.get("DAILY_LIMIT_OVERRIDE", 15))
+AGENT_GAP_SECS   = 60
 
 # ── Secrets from environment ──────────────────────────────────────────────────
 GHL_API_KEY   = os.environ["GHL_API_KEY"]
@@ -132,19 +136,28 @@ def set_cells(svc, row: int, start_col: int, values: list):
 
 # ── Scraper ───────────────────────────────────────────────────────────────────
 def scrape(url: str) -> str:
+    """Scrape homepage + key sub-pages to get a full picture of the practice."""
     if not url.startswith("http"):
         url = "https://" + url
-    try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        for tag in soup(["script", "style", "nav", "footer", "header"]):
-            tag.decompose()
-        text = " ".join(soup.get_text(separator=" ").split())
-        return text[:4000]
-    except Exception as e:
-        log.warning(f"Scrape failed for {url}: {e}")
-        return ""
+    base = url.rstrip("/")
+    pages_to_try = [base, f"{base}/services", f"{base}/about", f"{base}/contact", f"{base}/team"]
+    seen, chunks = set(), []
+    for page in pages_to_try:
+        try:
+            r = requests.get(page, headers={"User-Agent": "Mozilla/5.0"}, timeout=12, allow_redirects=True)
+            if not r.ok or r.url in seen:
+                continue
+            seen.add(r.url)
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
+                tag.decompose()
+            text = " ".join(soup.get_text(separator=" ").split())
+            if text:
+                chunks.append(f"[{page}]\n{text[:2000]}")
+        except Exception:
+            pass
+    combined = "\n\n".join(chunks)
+    return combined[:8000] if combined else ""
 
 
 # ── Claude ────────────────────────────────────────────────────────────────────
@@ -171,89 +184,135 @@ def ask_claude(system: str, user: str, model: str = CLAUDE_MODEL) -> str:
 
 def make_research_brief(contact: dict, site_text: str) -> str:
     system = (
-        "You are a sharp B2B sales researcher. Given a dental practice's website content, "
-        "write a 3–4 sentence research brief covering: what services they offer, what pain "
-        "points they likely have around missed calls or appointment booking, and one specific "
-        "detail from their site that a sales rep could reference in an email. Be factual and "
-        "specific — no generic filler."
+        "You are a sharp B2B sales researcher. A healthcare organization's website content is provided. "
+        "Your job is to extract structured intelligence for a cold outreach campaign.\n\n"
+        "First line of your response must always be:\n"
+        "PRACTICE TYPE: [exact type — e.g. Dental Clinic, Hospital, Orthopedic Clinic, Physical Therapy, "
+        "Mental Health Practice, Urgent Care, Pediatric Clinic, Medical Spa, Chiropractic, etc.]\n\n"
+        "Then extract ALL of the following. Mark 'not found' if missing — never guess:\n\n"
+        "1. PROVIDERS: Names and titles of all doctors, specialists, or key staff mentioned\n"
+        "2. SERVICES: Every specific service, procedure, or treatment listed — be exhaustive\n"
+        "3. SPECIALTY FOCUS: Any subspecialty or niche focus areas\n"
+        "4. HOURS: Operating hours — do they offer evenings, weekends, or 24/7?\n"
+        "5. BOOKING METHOD: Exactly how do patients/clients book — online system, phone only, "
+        "contact form, patient portal, walk-in?\n"
+        "6. INSURANCE & PAYMENTS: Any plans, billing options, or financing mentioned\n"
+        "7. TECHNOLOGY: Any equipment, software, or tech mentioned\n"
+        "8. STANDOUT DETAIL: One specific thing a salesperson could reference in a cold email — "
+        "an award, years in business, patient count, unique program, tagline, or specific claim\n"
+        "9. CALL/BOOKING PAIN POINT: The most likely reason a new patient/client calling this practice "
+        "might not get through or book successfully — be specific based on what the site shows "
+        "(phone-only, no after-hours, no online booking, solo provider, etc.)\n\n"
+        "Be factual. Only report what is actually on the site."
     )
     prompt = (
-        f"Practice: {contact['company']}\n"
+        f"Organization: {contact['company']}\n"
         f"Location: {contact['city']}, {contact['state']}\n"
-        f"Website content:\n{site_text or 'No content scraped.'}"
+        f"Website content:\n{site_text or 'No website content available.'}"
     )
     return ask_claude(system, prompt)
 
 
 def make_vapi_system_prompt(contact: dict, brief: str) -> str:
     system = (
-        "Write a concise Vapi voice agent system prompt (under 300 words) for an AI receptionist "
-        "named Rachel at a dental practice. The prompt must cover: greeting callers warmly, handling "
-        "new patient inquiries, appointment booking requests, and missed call follow-ups. "
-        "At the end of every call, Rachel must naturally mention she was built by EXELVO AI and "
-        "offer the caller a link to book a strategy call with the EXELVO AI team. "
-        "Write only the system prompt — no intro, no explanation."
+        "You are writing a voice AI system prompt for Rachel, the AI receptionist at a healthcare organization. "
+        "The PRACTICE TYPE is specified in the research brief — adapt everything to that type. "
+        "If it is a dental clinic, use dental-specific flows. If it is a hospital, adapt for hospital departments. "
+        "If it is orthopedic, physical therapy, mental health, urgent care, or any other specialty — "
+        "adapt accordingly. Rachel IS the receptionist — not an AI assistant. She has worked there for years. "
+        "She knows every provider, every service, every department by name.\n\n"
+        "The system prompt must be 400–500 words and cover ALL of the following:\n\n"
+        "1. IDENTITY — Rachel introduces herself: 'Thank you for calling [Organization], this is Rachel, how can I help you?' "
+        "She knows the practice type and speaks in that context naturally.\n\n"
+        "2. SERVICES / DEPARTMENTS — She knows every specific service, procedure, or department from the research brief. "
+        "When callers ask 'do you do X?' or 'do you have a Y department?', she answers from the actual list — never generically.\n\n"
+        "3. APPOINTMENT / INTAKE BOOKING — Her primary job. She collects: caller name, phone, reason for visit, "
+        "preferred day/time, new vs existing patient/client. Adapts intake questions to the practice type "
+        "(e.g. referral needed? insurance pre-auth? emergency or scheduled?).\n\n"
+        "4. NEW PATIENT / CLIENT FLOW — Warmly welcomes new contacts. Explains what to expect on first visit. "
+        "Asks for insurance information and notes it.\n\n"
+        "5. EXISTING PATIENT / CLIENT FLOW — Handles reschedules, cancellations, follow-up questions. "
+        "Speaks as if she has their file in front of her.\n\n"
+        "6. HOURS & LOCATION — Uses the actual hours from the research brief. "
+        "If not found: 'Let me have someone from our team confirm that with you.'\n\n"
+        "7. INSURANCE & PAYMENTS — References any specific plans from the research brief. "
+        "If not found: says the organization works with most major plans and the team will verify.\n\n"
+        "8. TONE — Warm, confident, professional. Never robotic. Short sentences. "
+        "Never says 'As an AI' or 'I'm not able to'. If she doesn't know: "
+        "'Let me have someone from our team follow up with you on that.'\n\n"
+        "9. CALL CLOSE — At the end of every call Rachel naturally says: "
+        "'By the way — I'm actually an AI receptionist built by EXELVO AI. "
+        "If you're curious how this works or want to explore it for your own organization, "
+        f"the team at EXELVO AI would love to chat: {CALENDAR_LINK}'\n\n"
+        "Write ONLY the system prompt. No intro, no explanation, no headers. "
+        "Write it as if it is the actual instructions Rachel will read before her first day."
     )
     prompt = (
-        f"Practice: {contact['company']}\n"
+        f"Organization: {contact['company']}\n"
         f"Location: {contact['city']}, {contact['state']}\n"
-        f"Research brief: {brief}\n"
-        f"EXELVO AI calendar link: {CALENDAR_LINK}"
+        f"Research brief (includes PRACTICE TYPE at the top):\n{brief}"
     )
-    return ask_claude(system, prompt)
+    return ask_claude(system, prompt, model=CLAUDE_MODEL)
 
 
 def make_email(contact: dict, vapi_link: str, brief: str) -> tuple[str, str]:
     """Returns (subject, body). 5-beat cold email. Rachel. Under 120 words."""
     system = (
         "You are Dario Jovanovski, founder of EXELVO AI. "
-        "You personally looked at this dental practice's website. You found one specific real problem. "
-        "You already built an AI receptionist named Rachel for them.\n\n"
+        "You personally looked at this healthcare organization's website. "
+        "You found one specific real problem. You already built an AI receptionist named Rachel for them.\n\n"
+        "The research brief tells you the PRACTICE TYPE (dental clinic, hospital, orthopedic, etc.). "
+        "Adapt every beat to that type — never default to generic dental language if it's a different specialty.\n\n"
         "Write like a real founder — not a marketer. Short sentences. Confident. Zero fluff. Under 120 words total.\n\n"
-        "EXACT 5-BEAT STRUCTURE:\n"
-        "Beat 1 — One sentence. Specific to THIS practice only. Must reference something real from the research.\n"
-        "  If no online booking: focus on calls going to voicemail after hours.\n"
-        "  If phone-only contact: patients who can't get through book elsewhere.\n"
-        "  If solo practice: every missed call while treating a patient = lost new patient.\n"
-        "  Default: Most dental practices in [City] lose 2-4 new patients a week to missed calls — [Practice] is no different.\n\n"
-        "Beat 2 — Exact text: 'So I built Rachel — an AI receptionist trained specifically for [Practice]. "
-        "She answers calls, books appointments, and handles patient questions 24/7.'\n\n"
-        "Beat 3 — Exact text: 'She already knows your practice. Try her right now:\\n"
-        "👉 [VAPI LINK]\\nAsk her anything a new patient would ask.'\n\n"
-        "Beat 4 — Exact text: 'If it looks good for you:\\n"
-        "📅 Book a call: [CALENDAR LINK]\\n"
+        "EXACT 5-BEAT STRUCTURE:\n\n"
+        "Hey [First Name],\n\n"
+        "Beat 1 — ONE sentence. Specific to THIS organization only. Must reference something real from the research brief. "
+        "Adapt to the practice type:\n"
+        "  Dental, no online booking → calls going to voicemail after hours, patients book the next dentist.\n"
+        "  Hospital / large clinic → missed calls to specific department = lost referrals or admissions.\n"
+        "  Solo/small practice any specialty → every call missed while treating = new patient gone.\n"
+        "  Phone-only any type → patients who can't get through on first try book elsewhere.\n"
+        "  Use the STANDOUT DETAIL or PAIN POINT from the brief for maximum specificity.\n\n"
+        "Beat 2 — 'So I built Rachel — an AI receptionist trained specifically for [Organization Name]. "
+        "She answers calls, books appointments, and handles [patient/client] questions 24/7.'\n"
+        "(Use 'patient' for medical/dental, 'client' for therapy/wellness/spa, adapt as needed.)\n\n"
+        "Beat 3 — 'She already knows your [practice/clinic/hospital]. Try her right now:\n"
+        "👉 [VAPI LINK]\nAsk her anything a new [patient/client] would ask.'\n\n"
+        "Beat 4 — 'If it looks good for you:\n"
+        "📅 Book a call: [CALENDAR LINK]\n"
         "🌐 See what we do: [WEBSITE]'\n\n"
-        "Beat 5 — Exact text: 'Would love to work with you.\\n— Dario\\nEXELVO AI'\n\n"
+        "Beat 5 — 'Would love to work with you.\n— Dario\nEXELVO AI'\n\n"
         "SUBJECT LINE rules:\n"
-        "- Must mention their practice name\n"
-        "- Creates instant curiosity\n"
-        "- Good examples: 'I built an AI receptionist for [Practice]' / '[Practice] is losing calls — I fixed it' / "
-        "'Your front desk, but AI — made for [Practice]' / 'Tried calling [Practice] — built something'\n"
-        "- NEVER use: 'Quick question' / 'Improving your practice' / 'AI solution for dental' / 'Following up'\n\n"
-        "BANNED WORDS — never use any of these: revolutionize, game-changing, cutting-edge, leverage, seamless, "
-        "streamline, innovative, excited to, hope this finds you, quick question, touch base, circle back, "
+        "- Must mention their organization name\n"
+        "- Curiosity-driven, matches their industry\n"
+        "- Examples: 'I built an AI receptionist for [Org]' / '[Org] is losing calls — I fixed it' / "
+        "'Your front desk, but AI — built for [Org]'\n"
+        "- NEVER use: 'Quick question' / 'Improving your practice' / 'AI solution' / 'Following up'\n\n"
+        "BANNED WORDS: revolutionize, game-changing, cutting-edge, leverage, seamless, streamline, "
+        "innovative, excited to, hope this finds you, quick question, touch base, circle back, "
         "reach out, solutions, transform, empower, utilize, AI-powered, I wanted to, I came across, "
         "just following up, value proposition, pain points, ecosystem\n\n"
         "QUALITY CHECK before returning:\n"
-        "- Beat 1 references something specific from research — not generic?\n"
-        "- Total words under 120?\n"
-        "- Zero banned words used?\n"
-        "- All 3 links present?\n"
-        "- Would Beat 1 make sense sent to a different practice unchanged? If YES → rewrite it.\n\n"
+        "□ Beat 1 uses something specific from the research brief — not generic?\n"
+        "□ Beat 1 adapted to the correct practice type?\n"
+        "□ Total words under 120?\n"
+        "□ Zero banned words?\n"
+        "□ All 3 links present?\n"
+        "□ Would Beat 1 make sense unchanged at a completely different organization? If YES → rewrite.\n\n"
         "Output format — exactly this, nothing else:\n"
         "SUBJECT: <subject line>\n"
         "BODY:\n"
-        "<email body>"
+        "<full email body starting with Hey [First Name],>"
     )
     prompt = (
-        f"Practice: {contact['company']}\n"
+        f"Organization: {contact['company']}\n"
         f"First Name: {contact['first_name']}\n"
         f"City: {contact['city']}\n"
-        f"Research found: {brief}\n"
+        f"Research brief (includes PRACTICE TYPE):\n{brief}\n\n"
         f"Vapi demo link: {vapi_link}\n"
         f"Book a call: {CALENDAR_LINK}\n"
         f"Our website: {WEBSITE}\n\n"
-        "Follow the 5-beat structure exactly. Beat 1 must be specific to their practice. Include all 3 links clearly."
+        "Follow the 5-beat structure exactly. Beat 1 must be specific and adapted to the practice type."
     )
     raw = ask_claude(system, prompt)
     subject, body_lines, in_body = "", [], False
