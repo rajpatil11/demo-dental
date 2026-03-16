@@ -62,7 +62,7 @@ log = logging.getLogger(__name__)
 #        Company(F), Email(G), Website(H), Phone(I), City(J), State(K),
 #        LinkedIn(L), Score(M), Score Reason(N), Status(O), Vapi Agent ID(P),
 #        Vapi Link(Q), Research Brief(R), Email Sent Time(S),
-#        Reply Received(T), Booked(U), Notes(V)
+#        Reply Received(T), Booked(U), Notes(V), Email Subject(W), Email Body(X)
 C = {
     "campaign_day":    1,   # B
     "first_name":      2,   # C
@@ -83,6 +83,8 @@ C = {
     "replied":         19,  # T
     "booked":          20,  # U
     "notes":           21,  # V
+    "email_subject":   22,  # W
+    "email_body":      23,  # X
 }
 
 
@@ -626,24 +628,24 @@ def process_contact(svc, row: list, sheet_row: int, campaign_day: int = 1) -> bo
 
         log.info("  [6/7] Updating GHL CRM + sending email...")
         ghl_id = ghl_find_contact(contact["email"])
-        if ghl_id:
-            ghl_update_contact(ghl_id, {
-                "email_subject":  subject,
-                "email_body":     body,
-                "vapi_demo_link": vapi_link,
-            })
-            ghl_add_note(ghl_id, f"EXELVO AI Day {campaign_day} | Agent: {agent_id}\nDemo: {vapi_link}")
-            ghl_send_email(ghl_id, contact["email"], subject, body)
-            ghl_add_tag(ghl_id, "Day1-Campaign-Live")
-            log.info(f"        GHL {ghl_id} — email sent + tagged Day1-Campaign-Live")
-        else:
-            log.warning("        GHL contact not found — CRM + email skipped")
+        if not ghl_id:
+            raise RuntimeError(f"GHL contact not found for {contact['email']} — cannot send email")
+        ghl_update_contact(ghl_id, {
+            "email_subject": subject,
+            "email_body":    body,
+            "vapi_link":     vapi_link,
+        })
+        ghl_add_note(ghl_id, f"EXELVO AI Day {campaign_day} | Agent: {agent_id}\nDemo: {vapi_link}")
+        ghl_send_email(ghl_id, contact["email"], subject, body)
+        ghl_add_tag(ghl_id, "Day1-Campaign-Live")
+        log.info(f"        GHL {ghl_id} — email sent + tagged Day1-Campaign-Live")
 
         log.info("  [7/7] Updating Google Sheet...")
         now_iso = datetime.now(timezone.utc).isoformat()
         set_cell(svc, sheet_row, C["campaign_day"], str(campaign_day))
         set_cells(svc, sheet_row, C["vapi_agent_id"],
                   [agent_id, vapi_link, brief, now_iso])
+        set_cells(svc, sheet_row, C["email_subject"], [subject, body])
         set_cell(svc, sheet_row, C["status"], "SENT")
         log.info(f"  ✓ SENT\n")
         return True
