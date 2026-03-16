@@ -204,42 +204,73 @@ def make_vapi_system_prompt(contact: dict, brief: str) -> str:
 
 
 def make_email(contact: dict, vapi_link: str, brief: str) -> tuple[str, str]:
-    """Returns (subject, body). Body is plain text, under 100 words."""
+    """Returns (subject, body). 5-beat cold email. Rachel. Under 120 words."""
     system = (
-        "You write short cold emails for a B2B AI agency. Rules:\n"
-        "1. Under 100 words total in the body\n"
-        "2. Sound like a real person texting a peer — zero fluff, zero buzzwords\n"
-        "3. Reference one specific pain point or detail from the research brief\n"
-        "4. Say 'I built an AI receptionist for [Practice Name]' naturally\n"
-        "5. Include the Vapi demo link with a clear CTA to try it\n"
-        "6. Include the EXELVO AI website link\n"
-        "7. Include the calendar booking link\n"
-        "8. No bullet points in the body\n"
-        "9. Sign off as sender name\n\n"
-        "Output format — exactly two lines, nothing else:\n"
-        "Subject: <subject line>\n"
-        "Body: <full email body, newlines as \\n>"
+        "You are Dario Jovanovski, founder of EXELVO AI. "
+        "You personally looked at this dental practice's website. You found one specific real problem. "
+        "You already built an AI receptionist named Rachel for them.\n\n"
+        "Write like a real founder — not a marketer. Short sentences. Confident. Zero fluff. Under 120 words total.\n\n"
+        "EXACT 5-BEAT STRUCTURE:\n"
+        "Beat 1 — One sentence. Specific to THIS practice only. Must reference something real from the research.\n"
+        "  If no online booking: focus on calls going to voicemail after hours.\n"
+        "  If phone-only contact: patients who can't get through book elsewhere.\n"
+        "  If solo practice: every missed call while treating a patient = lost new patient.\n"
+        "  Default: Most dental practices in [City] lose 2-4 new patients a week to missed calls — [Practice] is no different.\n\n"
+        "Beat 2 — Exact text: 'So I built Rachel — an AI receptionist trained specifically for [Practice]. "
+        "She answers calls, books appointments, and handles patient questions 24/7.'\n\n"
+        "Beat 3 — Exact text: 'She already knows your practice. Try her right now:\\n"
+        "👉 [VAPI LINK]\\nAsk her anything a new patient would ask.'\n\n"
+        "Beat 4 — Exact text: 'If it looks good for you:\\n"
+        "📅 Book a call: [CALENDAR LINK]\\n"
+        "🌐 See what we do: [WEBSITE]'\n\n"
+        "Beat 5 — Exact text: 'Would love to work with you.\\n— Dario\\nEXELVO AI'\n\n"
+        "SUBJECT LINE rules:\n"
+        "- Must mention their practice name\n"
+        "- Creates instant curiosity\n"
+        "- Good examples: 'I built an AI receptionist for [Practice]' / '[Practice] is losing calls — I fixed it' / "
+        "'Your front desk, but AI — made for [Practice]' / 'Tried calling [Practice] — built something'\n"
+        "- NEVER use: 'Quick question' / 'Improving your practice' / 'AI solution for dental' / 'Following up'\n\n"
+        "BANNED WORDS — never use any of these: revolutionize, game-changing, cutting-edge, leverage, seamless, "
+        "streamline, innovative, excited to, hope this finds you, quick question, touch base, circle back, "
+        "reach out, solutions, transform, empower, utilize, AI-powered, I wanted to, I came across, "
+        "just following up, value proposition, pain points, ecosystem\n\n"
+        "QUALITY CHECK before returning:\n"
+        "- Beat 1 references something specific from research — not generic?\n"
+        "- Total words under 120?\n"
+        "- Zero banned words used?\n"
+        "- All 3 links present?\n"
+        "- Would Beat 1 make sense sent to a different practice unchanged? If YES → rewrite it.\n\n"
+        "Output format — exactly this, nothing else:\n"
+        "SUBJECT: <subject line>\n"
+        "BODY:\n"
+        "<email body>"
     )
     prompt = (
-        f"Contact: {contact['first_name']} {contact['last_name']}, "
-        f"{contact['title'] or 'Owner'} at {contact['company']}, "
-        f"{contact['city']}, {contact['state']}\n"
-        f"Research brief: {brief}\n"
+        f"Practice: {contact['company']}\n"
+        f"First Name: {contact['first_name']}\n"
+        f"City: {contact['city']}\n"
+        f"Research found: {brief}\n"
         f"Vapi demo link: {vapi_link}\n"
-        f"EXELVO AI website: {WEBSITE}\n"
-        f"Calendar link: {CALENDAR_LINK}\n"
-        f"Sender: {SENDER_NAME}, {SENDER_COMPANY}"
+        f"Book a call: {CALENDAR_LINK}\n"
+        f"Our website: {WEBSITE}\n\n"
+        "Follow the 5-beat structure exactly. Beat 1 must be specific to their practice. Include all 3 links clearly."
     )
     raw = ask_claude(system, prompt)
-    subject, body = "", ""
-    for line in raw.splitlines():
-        if line.lower().startswith("subject:"):
+    subject, body_lines, in_body = "", [], False
+    for line in raw.strip().splitlines():
+        if line.upper().startswith("SUBJECT:"):
             subject = line.split(":", 1)[1].strip()
-        elif line.lower().startswith("body:"):
-            body = line.split(":", 1)[1].strip().replace("\\n", "\n")
+        elif line.upper().startswith("BODY:"):
+            in_body = True
+            rest = line.split(":", 1)[1].strip()
+            if rest:
+                body_lines.append(rest)
+        elif in_body:
+            body_lines.append(line)
+    body = "\n".join(body_lines).strip()
     if not subject or not body:
         lines = raw.strip().splitlines()
-        subject = lines[0].replace("Subject:", "").strip() if lines else "Quick question"
+        subject = lines[0].replace("SUBJECT:", "").replace("Subject:", "").strip() if lines else "I built an AI receptionist for you"
         body = "\n".join(lines[1:]).strip() if len(lines) > 1 else raw
     return subject, body
 
@@ -483,50 +514,42 @@ def process_contact(svc, row: list, sheet_row: int) -> bool:
     set_cell(svc, sheet_row, C["status"], "IN_PROGRESS")
 
     try:
-        log.info("  [1/8] Scraping website...")
+        log.info("  [1/7] Scraping website...")
         site_text = scrape(contact["website"])
         log.info(f"        {len(site_text)} chars scraped")
 
-        log.info("  [2/8] Writing research brief...")
+        log.info("  [2/7] Writing research brief...")
         brief = make_research_brief(contact, site_text)
         log.info(f"        Brief: {brief[:120]}...")
 
-        log.info("  [3/8] Writing Vapi system prompt...")
+        log.info("  [3/7] Writing Vapi system prompt...")
         vapi_prompt = make_vapi_system_prompt(contact, brief)
         log.info(f"        Prompt: {vapi_prompt[:80]}...")
 
-        log.info("  [4/8] Creating Vapi agent...")
+        log.info("  [4/7] Creating Vapi agent...")
         agent_id, vapi_link = create_vapi_agent(contact, vapi_prompt)
         log.info(f"        Agent ID: {agent_id}")
         log.info(f"        Demo link: {vapi_link}")
 
-        log.info("  [5/8] Writing cold email...")
+        log.info("  [5/7] Writing cold email...")
         subject, body = make_email(contact, vapi_link, brief)
         log.info(f"        Subject: {subject}")
 
-        log.info("  [6/8] Updating GHL CRM...")
+        log.info("  [6/7] Updating GHL CRM...")
         ghl_id = ghl_find_contact(contact["email"])
         if ghl_id:
-            note_body = (
-                f"EXELVO AI — Day 1 Outbound\n"
-                f"Subject: {subject}\n\n"
-                f"{body}\n\n"
-                f"Demo link: {vapi_link}"
-            )
-            ghl_add_note(ghl_id, note_body)
+            ghl_update_contact(ghl_id, {
+                "email_subject":  subject,
+                "email_body":     body,
+                "vapi_demo_link": vapi_link,
+            })
+            ghl_add_note(ghl_id, f"EXELVO AI Day 1 | Agent: {agent_id}\nDemo: {vapi_link}")
             ghl_add_tag(ghl_id, "Day1-Campaign-Live")
-            log.info(f"        GHL contact {ghl_id} — note added + tagged")
+            log.info(f"        GHL {ghl_id} — custom fields set + tagged Day1-Campaign-Live → workflow fires")
         else:
             log.warning("        GHL contact not found — CRM skipped")
 
-        log.info("  [7/8] Sending email...")
-        if ghl_id:
-            ghl_send_email(ghl_id, contact["email"], subject, body)
-            log.info(f"        Email sent → {contact['email']}")
-        else:
-            log.warning("        Email skipped — no GHL contact")
-
-        log.info("  [8/8] Updating Google Sheet...")
+        log.info("  [7/7] Updating Google Sheet...")
         now_iso = datetime.now(timezone.utc).isoformat()
         set_cells(svc, sheet_row, C["vapi_agent_id"],
                   [agent_id, vapi_link, brief, now_iso])
