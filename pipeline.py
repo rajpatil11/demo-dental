@@ -24,6 +24,7 @@ SHEET_ID_DEFAULT = "1v63RXp3-OF-RVCxWvhKk8qXfxzXPd_3ZaZ7algdIUho"
 CALENDAR_LINK    = "https://cal.com/parakeeet.ai/strategy-call-exelvo-ai"
 WEBSITE          = "https://www.exelvoai.com"
 SENDER_NAME      = "Dario Jovanovski"
+SENDER_EMAIL     = "support@parakeeet.com"
 SENDER_COMPANY   = "EXELVO AI"
 DAILY_LIMIT      = 15
 AGENT_GAP_SECS   = 120
@@ -375,6 +376,50 @@ def ghl_add_note(contact_id: str, body: str):
     r.raise_for_status()
 
 
+def ghl_send_email(contact_id: str, to_email: str, subject: str, plain_body: str):
+    """Find/create a GHL conversation then send an outbound email."""
+    # Find existing conversation
+    r = requests.get(
+        f"{GHL_BASE}/conversations/search",
+        params={"contactId": contact_id, "locationId": GHL_LOCATION_ID},
+        headers=_gh(), timeout=15,
+    )
+    r.raise_for_status()
+    convs = r.json().get("conversations", [])
+
+    if convs:
+        conv_id = convs[0]["id"]
+    else:
+        rc = requests.post(
+            f"{GHL_BASE}/conversations/",
+            json={"contactId": contact_id, "locationId": GHL_LOCATION_ID},
+            headers=_gh(), timeout=15,
+        )
+        rc.raise_for_status()
+        conv_id = rc.json()["conversation"]["id"]
+
+    # Plain text → minimal HTML
+    html_body = "".join(
+        f"<p>{line}</p>" if line.strip() else "<br>"
+        for line in plain_body.split("\n")
+    )
+
+    rs = requests.post(
+        f"{GHL_BASE}/conversations/messages",
+        json={
+            "type": "Email",
+            "conversationId": conv_id,
+            "subject": subject,
+            "html": html_body,
+            "emailFrom": f"{SENDER_NAME} <{SENDER_EMAIL}>",
+            "emailTo": to_email,
+        },
+        headers=_gh(), timeout=15,
+    )
+    rs.raise_for_status()
+    return rs.json()
+
+
 # ── Cleanup job ───────────────────────────────────────────────────────────────
 def run_cleanup(svc):
     log.info("━━━ CLEANUP JOB ━━━")
@@ -437,28 +482,28 @@ def process_contact(svc, row: list, sheet_row: int) -> bool:
     set_cell(svc, sheet_row, C["status"], "IN_PROGRESS")
 
     try:
-        log.info("  [1/7] Scraping website...")
+        log.info("  [1/8] Scraping website...")
         site_text = scrape(contact["website"])
         log.info(f"        {len(site_text)} chars scraped")
 
-        log.info("  [2/7] Writing research brief...")
+        log.info("  [2/8] Writing research brief...")
         brief = make_research_brief(contact, site_text)
         log.info(f"        Brief: {brief[:120]}...")
 
-        log.info("  [3/7] Writing Vapi system prompt...")
+        log.info("  [3/8] Writing Vapi system prompt...")
         vapi_prompt = make_vapi_system_prompt(contact, brief)
         log.info(f"        Prompt: {vapi_prompt[:80]}...")
 
-        log.info("  [4/7] Creating Vapi agent...")
+        log.info("  [4/8] Creating Vapi agent...")
         agent_id, vapi_link = create_vapi_agent(contact, vapi_prompt)
         log.info(f"        Agent ID: {agent_id}")
         log.info(f"        Demo link: {vapi_link}")
 
-        log.info("  [5/7] Writing cold email...")
+        log.info("  [5/8] Writing cold email...")
         subject, body = make_email(contact, vapi_link, brief)
         log.info(f"        Subject: {subject}")
 
-        log.info("  [6/7] Updating GHL CRM...")
+        log.info("  [6/8] Updating GHL CRM...")
         ghl_id = ghl_find_contact(contact["email"])
         if ghl_id:
             note_body = (
@@ -473,7 +518,14 @@ def process_contact(svc, row: list, sheet_row: int) -> bool:
         else:
             log.warning("        GHL contact not found — CRM skipped")
 
-        log.info("  [7/7] Updating Google Sheet...")
+        log.info("  [7/8] Sending email...")
+        if ghl_id:
+            ghl_send_email(ghl_id, contact["email"], subject, body)
+            log.info(f"        Email sent → {contact['email']}")
+        else:
+            log.warning("        Email skipped — no GHL contact")
+
+        log.info("  [8/8] Updating Google Sheet...")
         now_iso = datetime.now(timezone.utc).isoformat()
         set_cells(svc, sheet_row, C["vapi_agent_id"],
                   [agent_id, vapi_link, brief, now_iso])
