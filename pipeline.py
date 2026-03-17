@@ -668,6 +668,20 @@ def process_contact(svc, row: list, sheet_row: int, campaign_day: int = 1) -> bo
         brief = make_research_brief(contact, site_text)
         log.info(f"        Brief: {brief[:120]}...")
 
+        # ── Non-healthcare guard ──────────────────────────────────────────────
+        # If Claude refuses or detects a non-healthcare org, skip gracefully.
+        refusal_signals = [
+            "i cannot", "i can't", "not a healthcare", "not a medical",
+            "not a dental", "not a health", "this is not", "this organization is not",
+            "vegan dog food", "not a clinic", "not a practice", "not a hospital",
+        ]
+        brief_lower = brief.lower()
+        if any(sig in brief_lower for sig in refusal_signals):
+            log.warning(f"  ✗ INVALID — not a healthcare org: {contact['company']}")
+            set_cell(svc, sheet_row, C["status"], "INVALID")
+            set_cell(svc, sheet_row, C["notes"], "Skipped: not a healthcare organization")
+            return False
+
         log.info("  [3/7] Writing Vapi system prompt...")
         vapi_prompt = make_vapi_system_prompt(contact, brief)
         log.info(f"        Prompt: {vapi_prompt[:80]}...")
@@ -680,6 +694,14 @@ def process_contact(svc, row: list, sheet_row: int, campaign_day: int = 1) -> bo
         log.info("  [5/7] Writing cold email...")
         subject, body = make_email(contact, vapi_link, brief)
         log.info(f"        Subject: {subject}")
+
+        # ── Email refusal guard ───────────────────────────────────────────────
+        email_refusal_signals = ["i cannot write", "i can't write", "not a healthcare", "not a medical"]
+        if any(sig in subject.lower() for sig in email_refusal_signals):
+            log.warning(f"  ✗ INVALID — Claude refused to write email: {contact['company']}")
+            set_cell(svc, sheet_row, C["status"], "INVALID")
+            set_cell(svc, sheet_row, C["notes"], "Skipped: Claude refused — not a healthcare org")
+            return False
 
         log.info("  [6/7] Updating GHL CRM + sending email...")
         ghl_id = ghl_find_contact(contact["email"])
