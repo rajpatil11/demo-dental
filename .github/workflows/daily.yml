@@ -1,11 +1,9 @@
 name: Daily Outbound Pipeline
 
 on:
-  schedule:
-    # Mon–Fri at 5:00 PM IST = 11:30 UTC
-    - cron: "30 11 * * 1-5"
   workflow_dispatch:
-    # Allows manual trigger from the GitHub Actions tab
+    # PAUSED — schedule removed. Re-add cron to restart.
+    # Mon–Fri at 5:00 PM IST = 11:30 UTC → cron: "30 11 * * 1-5"
 
 jobs:
   pipeline:
